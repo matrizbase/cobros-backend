@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Buscador Cobros - MVP</title>
+  <style>
+    body{font-family:Arial;margin:20px}
+    .box{border:1px solid #ddd;padding:12px;margin-bottom:12px;border-radius:6px}
+    input{padding:8px;margin:6px}
+    button{padding:8px 12px}
+  </style>
+</head>
+<body>
+  <h2>Buscador Cobros - MVP</h2>
+
+  <div id="loginBox" class="box">
+    <h3>Login (PIN)</h3>
+    <input id="pin" placeholder="Ingresa PIN" />
+    <button onclick="login()">Entrar</button>
+    <div id="loginMsg"></div>
+  </div>
+
+  <div id="searchBox" class="box" style="display:none">
+    <h3>Buscar cliente</h3>
+    Nombre: <input id="nombre" /> DPI: <input id="dpi" /> NIT: <input id="nit" />
+    <button onclick="doSearch()">Buscar</button>
+    <button onclick="verHistorial()">Ver historial</button>
+  </div>
+
+  <div id="resultBox" class="box" style="display:none">
+    <h3>Resultado</h3>
+    <div id="resultContent"></div>
+  </div>
+
+<script>
+let token = null;
+const API_BASE = ""; // dejar vacío si servirás index.html desde el mismo dominio (p.ej. Render)
+async function login(){
+  const pin = document.getElementById("pin").value.trim();
+  const res = await fetch("/login", {
+    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pin})
+  });
+  const j = await res.json();
+  if(res.ok){
+    token = j.token;
+    document.getElementById("loginBox").style.display="none";
+    document.getElementById("searchBox").style.display="block";
+  } else {
+    document.getElementById("loginMsg").innerText = j.detail || "Error";
+  }
+}
+
+async function doSearch(){
+  const nombre = document.getElementById("nombre").value;
+  const dpi = document.getElementById("dpi").value;
+  const nit = document.getElementById("nit").value;
+  const res = await fetch("/search", {
+    method:"POST",
+    headers: {"Content-Type":"application/json","x-api-key": token},
+    body: JSON.stringify({nombre,dpi,nit})
+  });
+  const j = await res.json();
+  if(!res.ok){
+    alert(j.detail || "Error");
+    return;
+  }
+  document.getElementById("resultBox").style.display="block";
+  renderResult(j);
+}
+
+function renderResult(j){
+  let html = "<h4>Interno</h4>";
+  if(j.internal && j.internal.length){
+    for(const r of j.internal){
+      html += `<div><strong>${r.Nombre}</strong> — DPI: ${r.DPI} — NIT: ${r.NIT}</div>`;
+      html += `<div>Teléfonos internos: ${ (r.TelBase || []).join(" | ") }</div>`;
+      html += `<div>Email: ${r.Email || ""} Fecha: ${r.FechaNacimiento || ""}</div><hr/>`;
+    }
+  } else {
+    html += "<div>No encontrado en base interna</div>";
+  }
+  html += "<h4>Externo (búsqueda web)</h4>";
+  if(j.external){
+    html += `<div>Links encontrados: <ul>${ (j.external.links||[]).map(l=>"<li><a href='"+l+"' target='_blank'>"+l+"</a></li>").join("") }</ul></div>`;
+    html += `<div>Phones: ${(j.external.phones||[]).join(" | ")}</div>`;
+    html += `<div>Emails: ${(j.external.emails||[]).join(" | ")}</div>`;
+  }
+  document.getElementById("resultContent").innerHTML = html;
+}
+
+async function verHistorial(){
+  const res = await fetch("/history", {headers: {"x-api-key": token}});
+  const j = await res.json();
+  alert(JSON.stringify(j.history.slice(-10), null, 2));
+}
+</script>
+</body>
+</html>
