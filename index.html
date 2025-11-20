@@ -8,6 +8,8 @@
     .box{border:1px solid #ddd;padding:12px;margin-bottom:12px;border-radius:6px}
     input{padding:8px;margin:6px}
     button{padding:8px 12px}
+    table{border-collapse:collapse;width:100%}
+    td,th{border:1px solid #eee;padding:6px}
   </style>
 </head>
 <body>
@@ -21,9 +23,12 @@
   </div>
 
   <div id="searchBox" class="box" style="display:none">
-    <h3>Buscar cliente</h3>
-    Nombre: <input id="nombre" /> DPI: <input id="dpi" /> NIT: <input id="nit" />
+    <h3>Buscar cliente (campos separados)</h3>
+    Nombre: <input id="nombre" style="width:300px" /><br/>
+    DPI: <input id="dpi" /> 
+    NIT: <input id="nit" />
     <button onclick="doSearch()">Buscar</button>
+    <button onclick="doSearchValor()">Buscar (valor)</button>
     <button onclick="verHistorial()">Ver historial</button>
   </div>
 
@@ -34,10 +39,12 @@
 
 <script>
 let token = null;
-const API_BASE = ""; // dejar vacío si servirás index.html desde el mismo dominio (p.ej. Render)
+const API_BASE = ""; // si sirves index.html desde el mismo dominio (Render), dejar vacío
+
 async function login(){
   const pin = document.getElementById("pin").value.trim();
-  const res = await fetch("/login", {
+  if(!pin){ alert("Ingresa PIN"); return; }
+  const res = await fetch((API_BASE || "") + "/login", {
     method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pin})
   });
   const j = await res.json();
@@ -54,16 +61,26 @@ async function doSearch(){
   const nombre = document.getElementById("nombre").value;
   const dpi = document.getElementById("dpi").value;
   const nit = document.getElementById("nit").value;
-  const res = await fetch("/search", {
-    method:"POST",
-    headers: {"Content-Type":"application/json","x-api-key": token},
-    body: JSON.stringify({nombre,dpi,nit})
-  });
+  const params = new URLSearchParams();
+  if(nombre) params.append("nombre", nombre);
+  if(dpi) params.append("dpi", dpi);
+  if(nit) params.append("nit", nit);
+
+  const url = (API_BASE || "") + "/buscar?" + params.toString();
+  const res = await fetch(url, { headers: {"x-api-key": token} });
   const j = await res.json();
-  if(!res.ok){
-    alert(j.detail || "Error");
-    return;
-  }
+  if(!res.ok){ alert(j.detail || "Error"); return; }
+  document.getElementById("resultBox").style.display="block";
+  renderResult(j);
+}
+
+async function doSearchValor(){
+  const valor = prompt("Ingrese valor para búsqueda parcial (ej: apellido, parte DPI, teléfono):");
+  if(!valor) return;
+  const url = (API_BASE || "") + "/buscar?valor=" + encodeURIComponent(valor);
+  const res = await fetch(url, { headers: {"x-api-key": token} });
+  const j = await res.json();
+  if(!res.ok){ alert(j.detail || "Error"); return; }
   document.getElementById("resultBox").style.display="block";
   renderResult(j);
 }
@@ -89,9 +106,9 @@ function renderResult(j){
 }
 
 async function verHistorial(){
-  const res = await fetch("/history", {headers: {"x-api-key": token}});
+  const res = await fetch((API_BASE || "") + "/history", { headers: {"x-api-key": token} });
   const j = await res.json();
-  alert(JSON.stringify(j.history.slice(-10), null, 2));
+  alert(JSON.stringify(j.history.slice(-20), null, 2));
 }
 </script>
 </body>
