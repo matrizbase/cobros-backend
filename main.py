@@ -38,11 +38,18 @@ def load_data():
     if not os.path.exists(EXCEL_PATH):
         return pd.DataFrame()
     df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME, dtype=str).fillna("")
-    # normalizar nombres de columnas y proveer columna de búsqueda
     df.columns = [str(c).strip() for c in df.columns]
-    df["search_text"] = (df.get("DPI","") + " " + df.get("NOMBRE_CLIENTE","") + " " + df.get("NIT","") + " " +
-                         df.get("EMAIL","") + " " + df.get("Tel_1","") + " " + df.get("Tel_2","") + " " +
-                         df.get("Tel_3","")).str.lower()
+
+    df["search_text"] = (
+        df.get("DPI","") + " " +
+        df.get("NOMBRE_CLIENTE","") + " " +
+        df.get("NIT","") + " " +
+        df.get("EMAIL","") + " " +
+        df.get("Tel_1","") + " " +
+        df.get("Tel_2","") + " " +
+        df.get("Tel_3","")
+    ).str.lower()
+
     return df
 
 DF = load_data()
@@ -66,7 +73,26 @@ def get_current_user(x_api_key: str = Header(None)):
 
 @app.get("/")
 def root():
-    return {"status":"ok", "rows_loaded": len(DF)}
+    return {"status": "ok", "rows_loaded": len(DF)}
+
+# ---------- NUEVO ENDPOINT ----------
+@app.get("/numeros/full")
+def get_numeros_full(limit: int = 50):
+    """
+    Devuelve registros de la base cargada desde el Excel.
+    Ideal para verificar datos en producción.
+    """
+    global DF
+    if DF.empty:
+        return {"status": "empty", "message": "No se cargó ningún archivo Excel."}
+
+    return {
+        "status": "ok",
+        "rows": DF.head(limit).to_dict(orient="records"),
+        "total_rows": len(DF),
+        "limit_used": limit
+    }
+# -------------------------------------
 
 @app.post("/login")
 def login(payload: LoginIn):
@@ -75,7 +101,6 @@ def login(payload: LoginIn):
         raise HTTPException(status_code=401, detail="PIN inválido")
     asesor = PIN_MAP[pin]
     token = str(uuid.uuid4())
-    # token in-memory: {token: {asesor, pin, created}}
     SESSIONS[token] = {"asesor": asesor, "pin": pin, "created": time.time()}
     return {"token": token, "asesor": asesor}
 
@@ -85,17 +110,22 @@ def search(payload: SearchIn, user = Depends(get_current_user)):
     dpi = (payload.dpi or "").strip()
     nit = (payload.nit or "").strip()
 
-    # Reusar DF cargado
     global DF
     results = []
 
+    # búsqueda exacta
     if nombre and dpi and nit:
-        mask = (DF.get("NOMBRE_CLIENTE","").str.lower() == nombre.lower()) & (DF.get("DPI","").str.strip() == dpi) & (DF.get("NIT","").str.strip() == nit)
+        mask = (
+            DF.get("NOMBRE_CLIENTE","").str.lower() == nombre.lower()
+        ) & (
+            DF.get("DPI","").str.strip() == dpi
+        ) & (
+            DF.get("NIT","").str.strip() == nit
+        )
         matches = DF[mask]
     else:
         queries = " ".join([nombre, dpi, nit]).strip().lower()
         if queries:
-            # usar contains para parcial (Opción 1: mostrar todas coincidencias)
             matches = DF[DF["search_text"].str.contains(re.escape(queries), na=False)]
         else:
             matches = pd.DataFrame()
@@ -105,6 +135,7 @@ def search(payload: SearchIn, user = Depends(get_current_user)):
         for col in ["Tel_1","Tel_2","Tel_3","Tel_4","Tel_5"]:
             if col in row and str(row[col]).strip():
                 phones.append(str(row[col]).strip())
+
         results.append({
             "ID": row.get("ID",""),
             "Nombre": row.get("NOMBRE_CLIENTE",""),
@@ -115,7 +146,6 @@ def search(payload: SearchIn, user = Depends(get_current_user)):
             "TelBase": phones
         })
 
-    # registrar búsqueda
     HISTORY.append({
         "asesor": user["asesor"],
         "timestamp": time.time(),
@@ -125,7 +155,6 @@ def search(payload: SearchIn, user = Depends(get_current_user)):
         "internal_found": len(results) > 0
     })
 
-    # búsqueda externa ligera (scraping MVP)
     external = external_search(nombre or dpi or nit)
 
     return {"internal": results, "external": external}
@@ -140,9 +169,11 @@ def export_latest(user = Depends(get_current_user)):
     user_hist = [h for h in HISTORY if h["asesor"] == user["asesor"]]
     if not user_hist:
         raise HTTPException(status_code=404, detail="No hay historial")
+
     last = user_hist[-1]
     payload = SearchIn(nombre=last["nombre"], dpi=last["dpi"], nit=last["nit"])
     res = search(payload, user)
+
     rows = []
     for r in res["internal"]:
         rows.append({
@@ -154,39 +185,55 @@ def export_latest(user = Depends(get_current_user)):
             "FechaNacimiento": r["FechaNacimiento"],
             "TelBase": ";".join(r["TelBase"])
         })
+
     df_out = pd.DataFrame(rows)
     return {"csv": df_out.to_csv(index=False)}
 
-# --- External search (scraping muy básico) ---
+# --- External search ---
 PHONE_RE = re.compile(r'(\+?502[-\s]?\d{4}[-\s]?\d{4}|\d{8})')
 
 def external_search(query: str, limit=5):
     if not query:
         return {}
+
     try:
         headers = {"User-Agent":"Mozilla/5.0 (X11; Linux x86_64)"}
-        q = requests.utils.requote_uri(query + " site:facebook.com OR site:linkedin.com OR site:instagram.com OR site:tikok.com")
+        q = requests.utils.requote_uri(
+            query + " site:facebook.com OR site:linkedin.com OR site:instagram.com OR site:tikok.com"
+        )
         url = f"https://www.google.com/search?q={q}&num={limit}"
         r = requests.get(url, headers=headers, timeout=8)
         soup = BeautifulSoup(r.text, "html.parser")
+
         links = []
         phones = set()
         emails = set()
+
         for a in soup.find_all("a"):
             href = a.get("href","")
             if href.startswith("/url?q="):
                 link = href.split("/url?q=")[1].split("&")[0]
                 links.append(link)
-                # intentar extraer phone/email de la página destino (ligero)
+
                 try:
                     rr = requests.get(link, headers=headers, timeout=6)
                     text = rr.text
+
                     for m in PHONE_RE.findall(text):
                         phones.add(m)
+
                     for email in re.findall(r'[\w\.-]+@[\w\.-]+', text):
                         emails.add(email)
+
                 except:
                     pass
-        return {"query": query, "links": links[:10], "phones": list(phones), "emails": list(emails)}
+
+        return {
+            "query": query,
+            "links": links[:10],
+            "phones": list(phones),
+            "emails": list(emails)
+        }
+
     except Exception as e:
         return {"error": str(e)}
