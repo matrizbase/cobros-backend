@@ -1,124 +1,112 @@
-# =====================================================
-#   main.py — Versión SIMPLE, FUNCIONAL y ESTABLE
-# =====================================================
-
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import os
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
 
-# ============================
-# CONFIGURACIÓN
-# ============================
-EXCEL_PATH = "Plantilla_Basedatos.xlsx"   # tu archivo
-SHEET_NAME = "Base tel"                   # nombre de la hoja
+app = FastAPI()
 
-# ============================
-# LOGIN — PINs permitidos
-# ============================
-PIN_MAP = {
- "482911":"asesor01","179034":"asesor02","305218":"asesor03","660401":"asesor04","993120":"asesor05",
- "127845":"asesor06","774532":"asesor07","508217":"asesor08","246901":"asesor09","831605":"asesor10",
- "412709":"asesor11","580333":"asesor12","999002":"asesor13","351776":"asesor14","613490":"asesor15"
-}
-
-SESSIONS = {}
-
-# ============================
-# CARGA DEL EXCEL
-# ============================
-def load_excel():
-    if not os.path.exists(EXCEL_PATH):
-        print("⚠ Excel no encontrado en el servidor")
-        return pd.DataFrame()
-
-    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME, dtype=str).fillna("")
-    df.columns = [str(c).strip() for c in df.columns]
-
-    # columna de búsqueda rápida
-    df["search_text"] = (
-        df.get("NOMBRE_CLIENTE", "") + " " +
-        df.get("DPI", "") + " " +
-        df.get("NIT", "")
-    ).str.lower()
-
-    return df
-
-DF = load_excel()
-
-# ============================
-# INICIALIZAR FASTAPI
-# ============================
-app = FastAPI(title="Buscador Interno - Excel")
-
+# ================================
+#   CORS
+# ================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================
-# DEPENDENCIA DE AUTENTICACIÓN
-# ============================
-def require_login(x_api_key: str = Header(None)):
-    if not x_api_key or x_api_key not in SESSIONS:
-        raise HTTPException(401, "No autorizado — inicia sesión")
-    return SESSIONS[x_api_key]
+# ================================
+#   Cargar Excel
+# ================================
+EXCEL_FILE = "Plantilla_Basedatos.xlsx"
 
-# ============================
-# ENDPOINT: TEST
-# ============================
-@app.get("/")
-def root():
-    return {"status": "ok", "rows_loaded": len(DF)}
+df_base = pd.read_excel(EXCEL_FILE, sheet_name="Busqueda")
+df_tel = pd.read_excel(EXCEL_FILE, sheet_name="Base tel")
 
-# ============================
-# LOGIN
-# ============================
+# Limpieza de columnas
+df_base.columns = df_base.columns.str.strip()
+df_tel.columns = df_tel.columns.str.strip()
+
+# ================================
+#   PINs válidos (los 15)
+# ================================
+VALID_PINS = {
+    "482911", "551928", "844155", "663512", "190245",
+    "310928", "992451", "155702", "431700", "920018",
+    "118722", "700581", "611520", "801250", "319900"
+}
+
+# ================================
+#   LOGIN
+# ================================
 @app.post("/login")
 def login(data: dict):
-    pin = str(data.get("pin", "")).strip()
+    pin = data.get("pin", "").strip()
 
-    if pin not in PIN_MAP:
+    if pin not in VALID_PINS:
         raise HTTPException(status_code=401, detail="PIN inválido")
 
-    # crear token muy simple
-    token = f"token_{pin}"
-    SESSIONS[token] = {"asesor": PIN_MAP[pin]}
+    return {
+        "token": pin[::-1],  # token simple (PIN invertido)
+        "asesor": f"Asesor {pin}"
+    }
 
-    return {"token": token, "asesor": PIN_MAP[pin]}
 
-# ============================
-# BUSCAR (solo en Excel)
-# ============================
+# ================================
+#   BÚSQUEDA
+# ================================
 @app.post("/buscar")
-def buscar(data: dict, user=Depends(require_login)):
+def buscar(data: dict, x_api_key: str = Header(None)):
+    # Validar token
+    if not x_api_key or x_api_key[::-1] not in VALID_PINS:
+        raise HTTPException(status_code=403, detail="Token inválido")
 
-    nombre = (data.get("nombre") or "").strip().lower()
-    dpi    = (data.get("dpi") or "").strip()
-    nit    = (data.get("nit") or "").strip()
+    nombre = str(data.get("nombre", "")).strip()
+    dpi = str(data.get("dpi", "")).strip()
+    nit = str(data.get("nit", "")).strip()
 
     if not nombre and not dpi and not nit:
-        raise HTTPException(400, "Ingresa nombre, DPI o NIT")
+        raise HTTPException(status_code=400, detail="Debe ingresar algún criterio.")
 
-    query = f"{nombre} {dpi} {nit}".lower()
-    results = DF[DF["search_text"].str.contains(query, na=False)]
+    resultados = []
 
-    salida = []
-    for _, row in results.iterrows():
-        salida.append({
-            "Nombre": row.get("NOMBRE_CLIENTE", ""),
-            "DPI": row.get("DPI", ""),
-            "NIT": row.get("NIT", ""),
-            "Email": row.get("EMAIL", ""),
-            "Telefonos": [
-                row.get("Tel_1", ""),
-                row.get("Tel_2", ""),
-                row.get("Tel_3", ""),
-                row.get("Tel_4", ""),
-                row.get("Tel_5", "")
+    # Buscar dentro de hoja principal "Busqueda"
+    for idx, row in df_base.iterrows():
+
+        match = False
+
+        if nombre and nombre.lower() in str(row["NOMBRE_CLIENTE"]).lower():
+            match = True
+        if dpi and dpi == str(row["DPI"]):
+            match = True
+        if nit and nit == str(row["NIT"]):
+            match = True
+
+        if match:
+            # Buscar teléfonos en hoja Base tel
+            tel_row = df_tel[
+                (df_tel["DPI"] == row["DPI"]) |
+                (df_tel["NIT"] == row["NIT"])
             ]
-        })
 
-    return {"resultados": salida}
+            telefonos = []
+            if not tel_row.empty:
+                t = tel_row.iloc[0]
+                telefonos = [
+                    t.get("Tel_1"),
+                    t.get("Tel_2"),
+                    t.get("Tel_3"),
+                    t.get("Tel_4"),
+                    t.get("Tel_5")
+                ]
+                telefonos = [str(x) for x in telefonos if pd.notna(x)]
+
+            resultados.append({
+                "Nombre": row["NOMBRE_CLIENTE"],
+                "DPI": str(row["DPI"]),
+                "NIT": str(row["NIT"]),
+                "Email": row.get("EMAIL", ""),
+                "Telefonos": telefonos
+            })
+
+    return {"resultados": resultados}
