@@ -1,131 +1,124 @@
-# ============================
-#  main.py  — Versión CORREGIDA
-# ============================
+# =====================================================
+#   main.py — Versión SIMPLE, FUNCIONAL y ESTABLE
+# =====================================================
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import os, re, requests
-from bs4 import BeautifulSoup
+import os
 
-# ------------------------------
-# CARGAR EXCEL
-# ------------------------------
-EXCEL_PATH = "Plantilla_Basedatos.xlsx"
-SHEET_NAME = "Base tel"
+# ============================
+# CONFIGURACIÓN
+# ============================
+EXCEL_PATH = "Plantilla_Basedatos.xlsx"   # tu archivo
+SHEET_NAME = "Base tel"                   # nombre de la hoja
 
+# ============================
+# LOGIN — PINs permitidos
+# ============================
+PIN_MAP = {
+ "482911":"asesor01","179034":"asesor02","305218":"asesor03","660401":"asesor04","993120":"asesor05",
+ "127845":"asesor06","774532":"asesor07","508217":"asesor08","246901":"asesor09","831605":"asesor10",
+ "412709":"asesor11","580333":"asesor12","999002":"asesor13","351776":"asesor14","613490":"asesor15"
+}
+
+SESSIONS = {}
+
+# ============================
+# CARGA DEL EXCEL
+# ============================
 def load_excel():
     if not os.path.exists(EXCEL_PATH):
-        print("⚠ Excel no encontrado")
+        print("⚠ Excel no encontrado en el servidor")
         return pd.DataFrame()
 
-    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME, dtype=str)
-    df = df.fillna("")
-
-    # Normalizar
+    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME, dtype=str).fillna("")
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Crear columna de texto para búsqueda parcial
+    # columna de búsqueda rápida
     df["search_text"] = (
         df.get("NOMBRE_CLIENTE", "") + " " +
         df.get("DPI", "") + " " +
-        df.get("NIT", "") + " " +
-        df.get("EMAIL", "")
+        df.get("NIT", "")
     ).str.lower()
 
     return df
 
-
 DF = load_excel()
 
-# ------------------------------
-# FASTAPI APP
-# ------------------------------
-app = FastAPI(title="Buscador de Clientes")
+# ============================
+# INICIALIZAR FASTAPI
+# ============================
+app = FastAPI(title="Buscador Interno - Excel")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    allow_methods=["*"]
 )
 
-# ------------------------------
+# ============================
+# DEPENDENCIA DE AUTENTICACIÓN
+# ============================
+def require_login(x_api_key: str = Header(None)):
+    if not x_api_key or x_api_key not in SESSIONS:
+        raise HTTPException(401, "No autorizado — inicia sesión")
+    return SESSIONS[x_api_key]
+
+# ============================
 # ENDPOINT: TEST
-# ------------------------------
+# ============================
 @app.get("/")
 def root():
     return {"status": "ok", "rows_loaded": len(DF)}
 
-# ------------------------------
-# ENDPOINT PRINCIPAL /buscar
-# ------------------------------
-@app.post("/buscar")
-def buscar(payload: dict):
+# ============================
+# LOGIN
+# ============================
+@app.post("/login")
+def login(data: dict):
+    pin = str(data.get("pin", "")).strip()
 
-    nombre = (payload.get("nombre") or "").strip().lower()
-    dpi    = (payload.get("dpi") or "").strip()
-    nit    = (payload.get("nit") or "").strip()
+    if pin not in PIN_MAP:
+        raise HTTPException(status_code=401, detail="PIN inválido")
+
+    # crear token muy simple
+    token = f"token_{pin}"
+    SESSIONS[token] = {"asesor": PIN_MAP[pin]}
+
+    return {"token": token, "asesor": PIN_MAP[pin]}
+
+# ============================
+# BUSCAR (solo en Excel)
+# ============================
+@app.post("/buscar")
+def buscar(data: dict, user=Depends(require_login)):
+
+    nombre = (data.get("nombre") or "").strip().lower()
+    dpi    = (data.get("dpi") or "").strip()
+    nit    = (data.get("nit") or "").strip()
 
     if not nombre and not dpi and not nit:
-        raise HTTPException(400, "Debe ingresar nombre, DPI o NIT")
+        raise HTTPException(400, "Ingresa nombre, DPI o NIT")
 
-    # --------------------------
-    # BÚSQUEDA INTERNA
-    # --------------------------
-    query = f"{nombre} {dpi} {nit}".strip().lower()
+    query = f"{nombre} {dpi} {nit}".lower()
+    results = DF[DF["search_text"].str.contains(query, na=False)]
 
-    internos = DF[DF["search_text"].str.contains(query, na=False)]
-
-    internal_results = []
-    for _, row in internos.iterrows():
-        internal_results.append({
+    salida = []
+    for _, row in results.iterrows():
+        salida.append({
             "Nombre": row.get("NOMBRE_CLIENTE", ""),
             "DPI": row.get("DPI", ""),
             "NIT": row.get("NIT", ""),
             "Email": row.get("EMAIL", ""),
             "Telefonos": [
-                row.get("Tel_1", ""), row.get("Tel_2", ""),
-                row.get("Tel_3", ""), row.get("Tel_4", ""),
+                row.get("Tel_1", ""),
+                row.get("Tel_2", ""),
+                row.get("Tel_3", ""),
+                row.get("Tel_4", ""),
                 row.get("Tel_5", "")
             ]
         })
 
-    # --------------------------
-    # BÚSQUEDA EXTERNA (Google)
-    # --------------------------
-    externo = buscar_google(query)
-
-    return {
-        "internal": internal_results,
-        "external": externo
-    }
-
-# ------------------------------
-# BUSQUEDA LIGERA GOOGLE
-# ------------------------------
-def buscar_google(q):
-    try:
-        url = f"https://www.google.com/search?q={q}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=7)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        links = []
-        phones = set()
-        emails = set()
-
-        for a in soup.find_all("a"):
-            href = a.get("href", "")
-            if href.startswith("/url?q="):
-                u = href.split("/url?q=")[1].split("&")[0]
-                links.append(u)
-
-        return {
-            "links": links[:5],
-            "phones": list(phones),
-            "emails": list(emails)
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
+    return {"resultados": salida}
