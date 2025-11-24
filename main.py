@@ -4,46 +4,59 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# ======================================
-#   🔥 CORS — FUNCIONANDO CON GITHUB PAGES
-# ======================================
-origins = [
-    "https://matrizbase.github.io",
-    "https://matrizbase.github.io/cobros-web",
-    "*"
-]
-
+# ================================
+#   CORS
+# ================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],     # para GitHub Pages
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ======================================
-#   📄 Cargar Excel
-# ======================================
+# ================================
+#   Cargar Excel
+# ================================
 EXCEL_FILE = "Plantilla_Basedatos.xlsx"
 
 df_base = pd.read_excel(EXCEL_FILE, sheet_name="Busqueda")
 df_tel = pd.read_excel(EXCEL_FILE, sheet_name="Base tel")
 
+# Limpieza de columnas
 df_base.columns = df_base.columns.str.strip()
 df_tel.columns = df_tel.columns.str.strip()
 
-# ======================================
-#   🔐 PINs válidos
-# ======================================
+# ================================
+#   Normalización fuerte DPI / NIT
+# ================================
+def normalizar_columna(df, col):
+    df[col] = (
+        df[col]
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .str.strip()
+        .str.replace(" ", "")
+    )
+
+normalizar_columna(df_base, "DPI")
+normalizar_columna(df_base, "NIT")
+
+normalizar_columna(df_tel, "DPI")
+normalizar_columna(df_tel, "NIT")
+
+# ================================
+#   PINs válidos (los 15)
+# ================================
 VALID_PINS = {
     "482911", "551928", "844155", "663512", "190245",
     "310928", "992451", "155702", "431700", "920018",
     "118722", "700581", "611520", "801250", "319900"
 }
 
-# ======================================
-#   🔐 LOGIN
-# ======================================
+# ================================
+#   LOGIN
+# ================================
 @app.post("/login")
 def login(data: dict):
     pin = data.get("pin", "").strip()
@@ -52,72 +65,69 @@ def login(data: dict):
         raise HTTPException(status_code=401, detail="PIN inválido")
 
     return {
-        "token": pin[::-1],    # token = PIN invertido
+        "token": pin[::-1],  # token simple (PIN invertido)
         "asesor": f"Asesor {pin}"
     }
 
-# ======================================
-#   🔍 BUSCAR
-# ======================================
+# ================================
+#   BÚSQUEDA + TELÉFONOS
+# ================================
 @app.post("/buscar")
 def buscar(data: dict, x_api_key: str = Header(None)):
-    # Validar token
+    # Validación de token
     if not x_api_key or x_api_key[::-1] not in VALID_PINS:
         raise HTTPException(status_code=403, detail="Token inválido")
 
-    nombre = str(data.get("nombre", "")).strip()
-    dpi = str(data.get("dpi", "")).strip()
-    nit = str(data.get("nit", "")).strip()
+    # Normalizar criterios de búsqueda
+    nombre = str(data.get("nombre", "")).strip().lower()
+    dpi = str(data.get("dpi", "")).strip().replace(" ", "")
+    nit = str(data.get("nit", "")).strip().replace(" ", "")
 
     if not nombre and not dpi and not nit:
         raise HTTPException(status_code=400, detail="Debe ingresar algún criterio.")
 
     resultados = []
 
-    # =================================================
-    #   Buscar coincidencias en hoja "Busqueda"
-    # =================================================
+    # Búsqueda en hoja principal
     for idx, row in df_base.iterrows():
 
-        nombre_row = str(row.get("NOMBRE_CLIENTE", "")).strip()
-        dpi_row = str(row.get("DPI", "")).strip()
-        nit_row = str(row.get("NIT", "")).strip()
+        nombre_base = str(row.get("NOMBRE_CLIENTE", "")).lower().strip()
+        dpi_base = str(row.get("DPI", "")).strip().replace(" ", "")
+        nit_base = str(row.get("NIT", "")).strip().replace(" ", "")
 
-        coincide = False
+        match = False
 
-        if nombre and nombre.lower() in nombre_row.lower():
-            coincide = True
-        if dpi and dpi == dpi_row:
-            coincide = True
-        if nit and nit == nit_row:
-            coincide = True
+        if nombre and nombre in nombre_base:
+            match = True
+        if dpi and dpi == dpi_base:
+            match = True
+        if nit and nit == nit_base:
+            match = True
 
-        if coincide:
-            # ------------------------------------------
-            #   Buscar teléfonos en segunda hoja
-            # ------------------------------------------
+        if match:
+            # Buscar teléfonos usando DPI o NIT
             tel_row = df_tel[
-                (df_tel["DPI"].astype(str) == dpi_row) |
-                (df_tel["NIT"].astype(str) == nit_row)
+                (df_tel["DPI"] == dpi_base) |
+                (df_tel["NIT"] == nit_base)
             ]
 
             telefonos = []
             if not tel_row.empty:
-                r = tel_row.iloc[0]
+                t = tel_row.iloc[0]
                 telefonos = [
-                    r.get("Tel_1"),
-                    r.get("Tel_2"),
-                    r.get("Tel_3"),
-                    r.get("Tel_4"),
-                    r.get("Tel_5")
+                    t.get("Tel_1"),
+                    t.get("Tel_2"),
+                    t.get("Tel_3"),
+                    t.get("Tel_4"),
+                    t.get("Tel_5")
                 ]
-                telefonos = [str(t) for t in telefonos if pd.notna(t)]
+                telefonos = [str(x) for x in telefonos if pd.notna(x)]
 
             resultados.append({
-                "Nombre": nombre_row,
-                "DPI": dpi_row,
-                "NIT": nit_row,
-                "Email": str(row.get("EMAIL", "")),
+                "Nombre": row.get("NOMBRE_CLIENTE", ""),
+                "DPI": dpi_base,
+                "NIT": nit_base,
+                "Email": row.get("EMAIL", ""),
                 "Telefonos": telefonos
             })
 
