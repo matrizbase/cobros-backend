@@ -1,61 +1,49 @@
-import os
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# ================================
-#   CORS
-# ================================
+# ======================================
+#   🔥 CORS — FUNCIONANDO CON GITHUB PAGES
+# ======================================
+origins = [
+    "https://matrizbase.github.io",
+    "https://matrizbase.github.io/cobros-web",
+    "*"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# ================================
-#   Diagnóstico: Ver archivos disponibles
-# ================================
-print("=== ARCHIVOS EN EL DIRECTORIO (Render) ===")
-try:
-    print(os.listdir("."))
-except Exception as e:
-    print("Error listando directorio:", e)
-
-# ================================
-#   Cargar Excel
-# ================================
+# ======================================
+#   📄 Cargar Excel
+# ======================================
 EXCEL_FILE = "Plantilla_Basedatos.xlsx"
 
-try:
-    df_base = pd.read_excel(EXCEL_FILE, sheet_name="Busqueda")
-    df_tel = pd.read_excel(EXCEL_FILE, sheet_name="Base tel")
-except FileNotFoundError:
-    print("ERROR: No se encontró el archivo Excel en Render.")
-    raise
-except Exception as e:
-    print("Error cargando Excel:", e)
-    raise
+df_base = pd.read_excel(EXCEL_FILE, sheet_name="Busqueda")
+df_tel = pd.read_excel(EXCEL_FILE, sheet_name="Base tel")
 
-# Limpieza de columnas
 df_base.columns = df_base.columns.str.strip()
 df_tel.columns = df_tel.columns.str.strip()
 
-# ================================
-#   PINs válidos (los 15)
-# ================================
+# ======================================
+#   🔐 PINs válidos
+# ======================================
 VALID_PINS = {
     "482911", "551928", "844155", "663512", "190245",
     "310928", "992451", "155702", "431700", "920018",
     "118722", "700581", "611520", "801250", "319900"
 }
 
-# ================================
-#   LOGIN
-# ================================
+# ======================================
+#   🔐 LOGIN
+# ======================================
 @app.post("/login")
 def login(data: dict):
     pin = data.get("pin", "").strip()
@@ -64,14 +52,13 @@ def login(data: dict):
         raise HTTPException(status_code=401, detail="PIN inválido")
 
     return {
-        "token": pin[::-1],  # token simple (PIN invertido)
+        "token": pin[::-1],    # token = PIN invertido
         "asesor": f"Asesor {pin}"
     }
 
-
-# ================================
-#   BÚSQUEDA
-# ================================
+# ======================================
+#   🔍 BUSCAR
+# ======================================
 @app.post("/buscar")
 def buscar(data: dict, x_api_key: str = Header(None)):
     # Validar token
@@ -87,43 +74,50 @@ def buscar(data: dict, x_api_key: str = Header(None)):
 
     resultados = []
 
-    # Buscar dentro de hoja principal "Busqueda"
+    # =================================================
+    #   Buscar coincidencias en hoja "Busqueda"
+    # =================================================
     for idx, row in df_base.iterrows():
 
-        match = False
+        nombre_row = str(row.get("NOMBRE_CLIENTE", "")).strip()
+        dpi_row = str(row.get("DPI", "")).strip()
+        nit_row = str(row.get("NIT", "")).strip()
 
-        if nombre and nombre.lower() in str(row["NOMBRE_CLIENTE"]).lower():
-            match = True
-        if dpi and dpi == str(row["DPI"]):
-            match = True
-        if nit and nit == str(row["NIT"]):
-            match = True
+        coincide = False
 
-        if match:
-            # Buscar teléfonos en hoja Base tel
+        if nombre and nombre.lower() in nombre_row.lower():
+            coincide = True
+        if dpi and dpi == dpi_row:
+            coincide = True
+        if nit and nit == nit_row:
+            coincide = True
+
+        if coincide:
+            # ------------------------------------------
+            #   Buscar teléfonos en segunda hoja
+            # ------------------------------------------
             tel_row = df_tel[
-                (df_tel["DPI"].astype(str) == str(row["DPI"])) |
-                (df_tel["NIT"].astype(str) == str(row["NIT"]))
+                (df_tel["DPI"].astype(str) == dpi_row) |
+                (df_tel["NIT"].astype(str) == nit_row)
             ]
 
             telefonos = []
             if not tel_row.empty:
-                t = tel_row.iloc[0]
+                r = tel_row.iloc[0]
                 telefonos = [
-                    t.get("Tel_1"),
-                    t.get("Tel_2"),
-                    t.get("Tel_3"),
-                    t.get("Tel_4"),
-                    t.get("Tel_5")
+                    r.get("Tel_1"),
+                    r.get("Tel_2"),
+                    r.get("Tel_3"),
+                    r.get("Tel_4"),
+                    r.get("Tel_5")
                 ]
-                # Quitar vacíos / NaN
-                telefonos = [str(x) for x in telefonos if pd.notna(x) and str(x).strip() != ""]
+                telefonos = [str(t) for t in telefonos if pd.notna(t)]
 
             resultados.append({
-                "Nombre": row["NOMBRE_CLIENTE"],
-                "DPI": str(row["DPI"]),
-                "NIT": str(row["NIT"]),
-                "Email": row.get("EMAIL", ""),
+                "Nombre": nombre_row,
+                "DPI": dpi_row,
+                "NIT": nit_row,
+                "Email": str(row.get("EMAIL", "")),
                 "Telefonos": telefonos
             })
 
